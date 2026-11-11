@@ -2627,6 +2627,8 @@ export interface QueryTab {
   externalSqlFileMissing?: boolean;
   originalSql?: string;
   lastExecutedSql?: string;
+  /** SQL after plugin preprocessing produced it; replayed text matching this value is not preprocessed again. */
+  lastPreprocessedSql?: string;
   resultBaseSql?: string;
   /** Fingerprint of the complete editor document when the displayed result started. */
   resultEditorFingerprint?: string;

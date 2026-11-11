@@ -149,6 +149,7 @@ import { decodeQueryResultArchive, encodeQueryResultArchive, type DecodedQueryRe
 import * as api from "@/lib/backend/api";
 import { createFrontendPluginRegistry } from "@/lib/plugins/frontendPlugin";
 import { snapshotPluginWorkbenchContext } from "@/lib/plugins/pluginData";
+import { listSqlPreprocessors, preprocessSql, type SqlPreprocessContext, type SqlPreprocessor, type SqlPreprocessSource } from "@/lib/plugins/sqlPreprocessor";
 import { usePluginBottomDock } from "@/lib/plugins/pluginBottomDock";
 import { anySurfaceReferencesPluginConnection, pluginWorkbenchTitlesForConnection } from "@/lib/plugins/pluginConnectionSurfaces";
 import { useConnectionStore } from "@/stores/connectionStore";
@@ -7095,6 +7096,49 @@ export const useQueryStore = defineStore("query", () => {
     }, CANCEL_ACK_SETTLE_TIMEOUT_MS);
   }
 
+  // SQL preprocessor plugins are discovered from the installed-plugin registry
+  // with a short cache: executions are frequent while installs and uninstalls
+  // are rare, and the next discovery window picks them up.
+  const SQL_PREPROCESSOR_DISCOVERY_TTL_MS = 5_000;
+  let sqlPreprocessorDiscovery: { at: number; list: SqlPreprocessor[] } | null = null;
+
+  async function discoverSqlPreprocessors(): Promise<SqlPreprocessor[]> {
+    if (sqlPreprocessorDiscovery && Date.now() - sqlPreprocessorDiscovery.at < SQL_PREPROCESSOR_DISCOVERY_TTL_MS) return sqlPreprocessorDiscovery.list;
+    try {
+      const list = listSqlPreprocessors(await api.listPlugins());
+      sqlPreprocessorDiscovery = { at: Date.now(), list };
+      return list;
+    } catch (error) {
+      // Discovery is best-effort: without the plugin registry the query still
+      // runs unpreprocessed, and the next execution retries discovery instead
+      // of caching the failure.
+      queryExecutionLog("warn", "sql-preprocessor-discovery-failed", { error: String(error) });
+      return [];
+    }
+  }
+
+  async function preprocessTabEditorSql(tab: QueryTab, sql: string, source: SqlPreprocessSource): Promise<string> {
+    const preprocessors = await discoverSqlPreprocessors();
+    if (preprocessors.length === 0 || !sql.trim()) return sql;
+    const context: SqlPreprocessContext = {
+      connectionId: tab.connectionId,
+      dbType: effectiveDatabaseTypeForConnection(useConnectionStore().getConfig(tab.connectionId)),
+      database: tab.database || undefined,
+      schema: queryExecutionSchemaForTab(tab),
+      locale: currentLocale(),
+      source,
+    };
+    let preprocessed = sql;
+    for (const preprocessor of preprocessors) {
+      try {
+        preprocessed = await preprocessSql((pluginId, method, params, timeoutMs) => api.invokePlugin(pluginId, method, params, timeoutMs), preprocessor, context);
+      } catch (error) {
+        throw new Error(`SQL preprocessor '${preprocessor.label}' failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    return preprocessed;
+  }
+
   async function executeCurrentTab() {
     assertUpdateAllowsInteraction();
     const tab = tabs.value.find((t) => t.id === activeTabId.value);
@@ -8476,8 +8520,40 @@ export const useQueryStore = defineStore("query", () => {
     const tableDataNativeSelectionBlockOwner = tab.mode === "data" ? {} : undefined;
     tab.liveQueryMessages = [];
     if (tableDataNativeSelectionBlockOwner) beginDataGridNativeSelectionBlock(tableDataNativeSelectionBlockOwner);
+    // Plugin SQL preprocessors may rewrite the editor text before anything is
+    // derived from it. Sorting, pagination, count, and probe SQL must originate
+    // from the rewritten base, and the tab records what actually executed; only
+    // text a preprocessor actually produced is recognized on replay and skipped
+    // instead of rewritten a second time. A preprocessor failure fails the
+    // execution closed instead of sending the raw editor text (which the
+    // database cannot parse) to the server.
+    let sqlPreprocessed = false;
+    if (tab.mode === "query" && sql !== tab.lastPreprocessedSql) {
+      const source: SqlPreprocessSource = options?.refreshActiveResultRun === true || options?.pagination ? "replay" : "editor";
+      let preprocessedSql: string;
+      try {
+        preprocessedSql = await preprocessTabEditorSql(tab, sql, source);
+      } catch (error) {
+        if (findExecutionTab(id) === tab && tab.executionId === executionId) {
+          tab.isExecuting = false;
+          tab.isCancelling = false;
+          tab.executionId = undefined;
+          tab.executingResultRunId = undefined;
+          tab.queryExecutionStartedAt = undefined;
+        }
+        throw error;
+      }
+      if (preprocessedSql !== sql) {
+        sql = preprocessedSql;
+        sqlPreprocessed = true;
+      }
+    }
     const previousDisplayedSql = tab.resultBaseSql ?? tab.lastExecutedSql ?? tab.sql;
     tab.lastExecutedSql = sql;
+    // Only text a preprocessor actually produced is skipped on replay, so
+    // installing or changing preprocessors still applies to the next run of
+    // unchanged editor text.
+    tab.lastPreprocessedSql = sqlPreprocessed ? sql : undefined;
     tab.resultLocalSortOriginalRows = undefined;
     tab.resultLocalSortOriginalLargeValueCells = undefined;
     tab.resultLocalSortOriginalRawKeyCells = undefined;
@@ -8516,7 +8592,9 @@ export const useQueryStore = defineStore("query", () => {
       sourceTraceId: options?.sourceTraceId,
       sqlLength: sql.length,
     });
-    let queryBaseSql = options?.resultBaseSql ?? sql;
+    // A preprocessed statement is the real base of this execution; the caller's
+    // editor-text result base would feed broken SQL to count and page queries.
+    let queryBaseSql = sqlPreprocessed ? sql : (options?.resultBaseSql ?? sql);
     let sqlToExecute = sql;
     let resultSortedSql = options?.resultSortedSql;
     let queryMetadataSql = queryBaseSql;

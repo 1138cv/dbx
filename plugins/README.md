@@ -907,6 +907,75 @@ install a plugin but do not offer it in Redis details. Package with the current
 source CLI if an older published CLI rejects `capabilities`: the current
 Manifest schema and runtime accept that field.
 
+## SQL preprocessor capability
+
+A native plugin can rewrite the SQL editor's text right before DBX executes it,
+using the same manifest capability metadata as the Redis codec:
+
+```json
+{ "capabilities": [{ "id": "vendor.params.bind", "label": "JSON params", "kind": "sql-preprocessor-v1" }] }
+```
+
+Compatible plugins must have a native backend entrypoint. When one or more are
+installed, every execution of a query tab first offers the full editor text to
+each preprocessor (ordered by label) before DBX parses, splits, paginates, or
+executes anything. A typical use is a parameter dialect the database itself
+does not understand, for example a JSON header followed by named placeholders:
+
+```text
+{"a": 123, "ab": "123b"}
+===
+select * from a
+where a.a = :a
+and a.bc = :ab
+```
+
+The host invokes the sidecar's `sql/preprocess` method:
+
+```json
+{
+  "preprocessorId": "vendor.params.bind",
+  "sql": "<the editor text about to run>",
+  "context": { "connectionId": "…", "dbType": "mysql", "database": "app", "schema": "public", "locale": "zh-CN", "source": "editor" }
+}
+```
+
+The plugin answers one of:
+
+```json
+{ "action": "rewrite", "sql": "select * from a where a.a = 123 and a.bc = '123b'" }
+{ "action": "passthrough" }
+```
+
+Rules:
+
+- **`passthrough` is the default answer** for text the plugin does not own, so
+  ordinary statements execute unchanged and unrelated installations are inert.
+- **Rewrites must be deterministic**: the same input must always produce the
+  same output. Pagination, sorting, count, and refresh replays derive from the
+  rewritten base, and DBX recognizes already-preprocessed replay text instead
+  of invoking the plugin again — a plugin that rewrites everything would loop.
+  Return SQL that tolerates `LIMIT/OFFSET` wrapping so pages stay valid.
+- **Bind values safely.** When substituting values into SQL text, escape them
+  as SQL literals for the connection's dialect; never splice raw user JSON.
+- **Failures fail closed.** A plugin error, timeout, or malformed response
+  aborts the execution with the plugin's label in the error instead of sending
+  the raw editor text to the server. Discovery of installed preprocessors is
+  best-effort; without the plugin registry the query simply runs unpreprocessed.
+- **Bounds.** Calls time out after 5 seconds; input and rewritten SQL are each
+  capped at 1,000,000 characters.
+- `context` carries identity only — connection id, dialect, database, schema,
+  locale, and whether the text came from the editor or a replay. No credentials
+  or connection strings cross this boundary. `source` is `"editor"` for user
+  runs and `"replay"` when DBX re-runs recorded text (refresh flows); the
+  distinction is advisory.
+- Data tabs, non-SQL tabs, and DBX-generated SQL (admin dialogs, pagination
+  wrappers, exports) are not offered to preprocessors; only query-tab editor
+  text is.
+
+Older hosts ignore the capability kind, so a plugin declaring it still installs
+everywhere — the rewrite simply does not run there.
+
 ## Backend protocol
 
 The backend is a persistent child process with stdin/stdout reserved for the DBX protocol. Diagnostics must go to stderr.
