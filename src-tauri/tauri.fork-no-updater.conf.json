@@ -2,8 +2,7 @@
   "bundle": {
     "createUpdaterArtifacts": false,
     "macOS": {
-      "signingIdentity": "-",
-      "entitlements": false
+      "signingIdentity": "-"
     }
   }
 }
