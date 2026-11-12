@@ -28,6 +28,7 @@ jobs:
   secrets-gate:
     runs-on: ubuntu-latest
     outputs:
+      apple: ${{ steps.gate.outputs.apple }}
       docker: ${{ steps.gate.outputs.docker }}
       jdbc: ${{ steps.gate.outputs.jdbc }}
       vsign: ${{ steps.gate.outputs.vsign }}
@@ -35,14 +36,17 @@ jobs:
       - name: Map signing secret presence
         id: gate
         env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
           MCP_RELEASE_TOKEN: ${{ secrets.MCP_RELEASE_TOKEN }}
           VSIGN_OPERATOR_PFX_B64: ${{ secrets.VSIGN_OPERATOR_PFX_B64 }}
         run: |
+          if [[ -n "$APPLE_CERTIFICATE" ]]; then APPLE_OK=true; else APPLE_OK=false; fi
           if [[ -n "$DOCKERHUB_USERNAME" && -n "$CNB_TOKEN" ]]; then DOCKER_OK=true; else DOCKER_OK=false; fi
           if [[ -n "$MCP_RELEASE_TOKEN" ]]; then JDBC_OK=true; else JDBC_OK=false; fi
           if [[ -n "$VSIGN_OPERATOR_PFX_B64" ]]; then VSIGN_OK=true; else VSIGN_OK=false; fi
+          echo "apple=$APPLE_OK" >> "$GITHUB_OUTPUT"
           echo "docker=$DOCKER_OK" >> "$GITHUB_OUTPUT"
           echo "jdbc=$JDBC_OK" >> "$GITHUB_OUTPUT"
           echo "vsign=$VSIGN_OK" >> "$GITHUB_OUTPUT"
@@ -160,7 +164,10 @@ jobs:
     # Explicit name keeps matrix-only fields such as asset_pattern from being
     # appended to the generated job display name.
     name: build (${{ matrix.platform }}, ${{ matrix.target }})
-    needs: release-ready
+    needs: [release-ready, secrets-gate]
+    # macOS bundling requires notarization credentials once it gets past ad-hoc
+    # signing; without the Apple certificate skip the macOS legs entirely.
+    if: ${{ !startsWith(matrix.platform, 'macos') || needs.secrets-gate.outputs.apple == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -399,7 +406,10 @@ jobs:
       # available there directly).
       HAS_VSIGN: ${{ secrets.VSIGN_OPERATOR_PFX_B64 != '' && 'true' || '' }}
       HAS_TAURI_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_BASE64 != '' && 'true' || '' }}
-      SCCACHE_GHA_ENABLED: ${{ secrets.SCCACHE_S3_BUCKET == '' && 'true' || 'false' }}
+      # The GHA cache backend resets its connection while compiling the largest
+      # crate on Windows (os error 10054, twice in a row); the S3 backend is
+      # not configured here either, so sccache stays on its local disk cache.
+      SCCACHE_GHA_ENABLED: "false"
       VSIGN_CERT_HASH: ${{ vars.VSIGN_CERT_HASH }}
       VSIGN_OPERATOR_SHA1: ${{ vars.VSIGN_OPERATOR_SHA1 }}
       VSIGN_SERVER: ${{ vars.VSIGN_SERVER }}
