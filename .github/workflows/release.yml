@@ -61,6 +61,9 @@ jobs:
         run: nix build .#dbx-desktop --no-link --print-build-logs
 
   bump-jdbc-plugin-version:
+    # The bump is committed back to main with a dedicated token; without it the
+    # job cannot push and the downstream JDBC plugin packaging is skipped.
+    if: secrets.MCP_RELEASE_TOKEN != ''
     runs-on: ubuntu-latest
     outputs:
       changed: ${{ steps.bump.outputs.changed }}
@@ -251,7 +254,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install Apple certificate (macOS)
-        if: startsWith(matrix.platform, 'macos')
+        if: startsWith(matrix.platform, 'macos') && secrets.APPLE_CERTIFICATE != ''
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -296,6 +299,7 @@ jobs:
           ./.github/scripts/prepare-appimage-bundler.sh "${{ matrix.target }}"
 
       - name: Setup Tauri signing key
+        if: secrets.TAURI_SIGNING_PRIVATE_KEY_BASE64 != ''
         shell: bash
         run: |
           echo "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_BASE64 }}" | base64 --decode > "$RUNNER_TEMP/updater.key"
@@ -325,7 +329,10 @@ jobs:
           releaseDraft: true
           # Empty on x64 legs: tauri-action then keeps the default Tauri CLI names.
           assetNamePattern: ${{ matrix.asset_pattern }}
-          args: --target ${{ matrix.target }}
+          # Without an updater signing key the updater artifacts cannot be
+          # signed, so a supplementary config disables producing them at all
+          # instead of failing the bundle step.
+          args: --target ${{ matrix.target }} ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_BASE64 == '' && '--config src-tauri/tauri.fork-no-updater.conf.json' || '' }}
 
       - name: Verify AppImage runtime bundle
         if: startsWith(matrix.platform, 'ubuntu')
@@ -452,6 +459,7 @@ jobs:
           cache-on-failure: true
 
       - name: Setup Tauri signing key
+        if: secrets.TAURI_SIGNING_PRIVATE_KEY_BASE64 != ''
         shell: bash
         run: |
           echo "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_BASE64 }}" | base64 --decode > "$RUNNER_TEMP/updater.key"
@@ -462,6 +470,7 @@ jobs:
           fi
 
       - name: Setup TrustAsia VSign
+        if: secrets.VSIGN_OPERATOR_PFX_B64 != ''
         shell: pwsh
         env:
           VSIGN_OPERATOR_PFX_B64: ${{ secrets.VSIGN_OPERATOR_PFX_B64 }}
@@ -484,7 +493,12 @@ jobs:
           # No assetNamePattern: the default Tauri CLI names already produce
           # DBX_[version]_x64/arm64-setup.exe and keep the _en-US.msi names.
           # tauri.msi-version.conf.json is generated above and is empty for stable tags.
-          args: --target ${{ matrix.target }} --config src-tauri/tauri.vsign.conf.json --config src-tauri/tauri.msi-version.conf.json
+          # The VSign config wires a remote Windows signing command; without the
+          # operator secret it must stay out of the build so installers come out
+          # unsigned instead of failing the bundle step. Likewise, without an
+          # updater signing key the updater artifacts are disabled via the
+          # supplementary config instead of failing the bundle step.
+          args: --target ${{ matrix.target }} ${{ secrets.VSIGN_OPERATOR_PFX_B64 != '' && '--config src-tauri/tauri.vsign.conf.json' || '' }} --config src-tauri/tauri.msi-version.conf.json ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_BASE64 == '' && '--config src-tauri/tauri.fork-no-updater.conf.json' || '' }}
 
       - name: Verify Windows executable stack reserve
         shell: pwsh
@@ -492,6 +506,8 @@ jobs:
 
       - name: Verify Windows bundles
         shell: pwsh
+        env:
+          VSIGN_SIGNED: ${{ secrets.VSIGN_OPERATOR_PFX_B64 != '' && 'true' || '' }}
         run: |
           $bundleRoot = "target/${{ matrix.target }}/release/bundle"
           $nsisInstallers = @(
@@ -506,12 +522,17 @@ jobs:
           if ($msiInstallers.Count -eq 0) {
             throw "No MSI installer was produced for ${{ matrix.target }}"
           }
-          ./.github/scripts/assert-authenticode.ps1 -Path @(
-            $nsisInstallers.FullName
-            $msiInstallers.FullName
-          )
+          if ($env:VSIGN_SIGNED -eq 'true') {
+            ./.github/scripts/assert-authenticode.ps1 -Path @(
+              $nsisInstallers.FullName
+              $msiInstallers.FullName
+            )
+          } else {
+            Write-Host "Skipping Authenticode verification: no VSign secret configured."
+          }
 
       - name: Upload Windows WebView2 offline installer
+        if: secrets.VSIGN_OPERATOR_PFX_B64 != ''
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -547,6 +568,7 @@ jobs:
           gh release upload "${env:RELEASE_TAG}" $offlineName --repo "${env:GITHUB_REPOSITORY}" --clobber
 
       - name: Upload Windows portable ZIP
+        if: secrets.VSIGN_OPERATOR_PFX_B64 != ''
         timeout-minutes: 20
         shell: pwsh
         env:
@@ -627,6 +649,9 @@ jobs:
 
   build-windows-7-offline:
     needs: release-ready
+    # The fixed-runtime installer is only produced through the VSign remote
+    # signing pipeline; without the operator secret the whole job is moot.
+    if: secrets.VSIGN_OPERATOR_PFX_B64 != ''
     runs-on: windows-2022
     environment: release-signing
     # The vendored loader is a tracked Cargo input, so Rust compile caching is safe.
@@ -706,6 +731,7 @@ jobs:
         run: ./.github/scripts/assert-webview2-win7-loader.ps1 -BinaryPath target/x86_64-win7-windows-msvc/release/dbx.exe
 
       - name: Setup TrustAsia VSign
+        if: secrets.VSIGN_OPERATOR_PFX_B64 != ''
         shell: pwsh
         env:
           VSIGN_OPERATOR_PFX_B64: ${{ secrets.VSIGN_OPERATOR_PFX_B64 }}
@@ -973,7 +999,7 @@ jobs:
       - name: Verify inside oldest available Ubuntu container
         run: |
           VERIFY_IMAGE=""
-          for image in ubuntu:14.04 ubuntu:16.04; do
+          for image in ubuntu:14.04 ubuntu:16.04 ubuntu:20.04; do
             if docker pull "$image" >/dev/null 2>&1; then
               VERIFY_IMAGE="$image"
               break
@@ -1325,6 +1351,9 @@ jobs:
             --apply
 
   docker:
+    # Publishing container images requires both registry credentials; a fork
+    # without them skips the matrix instead of failing every push.
+    if: secrets.DOCKERHUB_USERNAME != '' && secrets.CNB_TOKEN != ''
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
