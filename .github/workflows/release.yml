@@ -345,11 +345,9 @@ jobs:
           fi
 
       - name: Build Tauri app
-        # macOS bundling needs notarization credentials once it gets past
-        # ad-hoc signing; without the Apple certificate skip the macOS legs
-        # (they complete without artifacts) instead of failing after a full
-        # compile. The matrix context is not available in a job-level if.
-        if: ${{ !startsWith(matrix.platform, 'macos') || env.HAS_APPLE_CERT == 'true' }}
+        # Without the Apple certificate the fork supplementary config switches
+        # macOS bundling to ad-hoc signing without notarization; the build
+        # still produces dmg/app artifacts for personal use.
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -360,20 +358,11 @@ jobs:
           # holds far less memory than the default bfd linker.
           CARGO_BUILD_JOBS: ${{ (matrix.platform == 'ubuntu-22.04-arm' && '1') || 'default' }}
           RUSTFLAGS: ${{ (matrix.platform == 'ubuntu-22.04-arm' && '-C link-arg=-fuse-ld=lld') || '' }}
-          # An empty identity makes codesign fail with "no identity found";
-          # without the certificate secret fall back to ad-hoc signing ("-").
-          APPLE_SIGNING_IDENTITY: ${{ startsWith(matrix.platform, 'macos') && secrets.APPLE_SIGNING_IDENTITY || '-' }}
-          APPLE_ID: ${{ startsWith(matrix.platform, 'macos') && secrets.APPLE_ID || '' }}
-          APPLE_PASSWORD: ${{ startsWith(matrix.platform, 'macos') && secrets.APPLE_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ startsWith(matrix.platform, 'macos') && secrets.APPLE_TEAM_ID || '' }}
         with:
           tagName: ${{ inputs.release_tag || github.ref_name }}
           releaseDraft: true
           # Empty on x64 legs: tauri-action then keeps the default Tauri CLI names.
           assetNamePattern: ${{ matrix.asset_pattern }}
-          # Without an updater signing key the updater artifacts cannot be
-          # signed, so a supplementary config disables producing them at all
-          # instead of failing the bundle step.
           args: --target ${{ matrix.target }} ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_BASE64 == '' && '--config src-tauri/tauri.fork-no-updater.conf.json' || '' }}
 
       - name: Verify AppImage runtime bundle
