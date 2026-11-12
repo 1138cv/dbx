@@ -173,10 +173,11 @@ jobs:
           # it is set only on aarch64 legs (aarch64 -> arm64). x64 legs leave
           # it empty and keep the default Tauri CLI names (x64.dmg, amd64
           # deb/rpm/AppImage) used by downloadLinks and package consumers.
-          # macos-latest ARM runners were repeatedly lost ~15 minutes into the
-          # build (job cancelled with no failing step and no logs); pin to the
-          # macos-15 Apple Silicon image which has been stable for the Intel leg.
-          - platform: macos-15
+          # GitHub-hosted macOS ARM64 runners are repeatedly reclaimed ~15 min
+          # into the build (job cancelled, no failing step, logs lost) across
+          # both macos-latest and macos-15, while Intel runners are stable.
+          # Cross-compile the arm64 bundle on the Intel image instead.
+          - platform: macos-15-intel
             target: aarch64-apple-darwin
             asset_pattern: "DBX_[version]_arm64[setup][ext]"
           - platform: macos-15-intel
