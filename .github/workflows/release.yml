@@ -165,9 +165,6 @@ jobs:
     # appended to the generated job display name.
     name: build (${{ matrix.platform }}, ${{ matrix.target }})
     needs: [release-ready, secrets-gate]
-    # macOS bundling requires notarization credentials once it gets past ad-hoc
-    # signing; without the Apple certificate skip the macOS legs entirely.
-    if: ${{ !startsWith(matrix.platform, 'macos') || needs.secrets-gate.outputs.apple == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -348,6 +345,11 @@ jobs:
           fi
 
       - name: Build Tauri app
+        # macOS bundling needs notarization credentials once it gets past
+        # ad-hoc signing; without the Apple certificate skip the macOS legs
+        # (they complete without artifacts) instead of failing after a full
+        # compile. The matrix context is not available in a job-level if.
+        if: ${{ !startsWith(matrix.platform, 'macos') || env.HAS_APPLE_CERT == 'true' }}
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
