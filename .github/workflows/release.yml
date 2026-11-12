@@ -21,6 +21,32 @@ env:
   CNB_REGISTRY: "docker.cnb.cool"
 
 jobs:
+  # `secrets` is not a legal context in `if:` conditionals, so this job is the
+  # single place that maps secret presence to outputs; jobs and steps gate
+  # signing and publishing steps on these values. A fork without the upstream
+  # secrets builds unsigned artifacts instead of failing.
+  secrets-gate:
+    runs-on: ubuntu-latest
+    outputs:
+      docker: ${{ steps.gate.outputs.docker }}
+      jdbc: ${{ steps.gate.outputs.jdbc }}
+      vsign: ${{ steps.gate.outputs.vsign }}
+    steps:
+      - name: Map signing secret presence
+        id: gate
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          CNB_TOKEN: ${{ secrets.CNB_TOKEN }}
+          MCP_RELEASE_TOKEN: ${{ secrets.MCP_RELEASE_TOKEN }}
+          VSIGN_OPERATOR_PFX_B64: ${{ secrets.VSIGN_OPERATOR_PFX_B64 }}
+        run: |
+          if [[ -n "$DOCKERHUB_USERNAME" && -n "$CNB_TOKEN" ]]; then DOCKER_OK=true; else DOCKER_OK=false; fi
+          if [[ -n "$MCP_RELEASE_TOKEN" ]]; then JDBC_OK=true; else JDBC_OK=false; fi
+          if [[ -n "$VSIGN_OPERATOR_PFX_B64" ]]; then VSIGN_OK=true; else VSIGN_OK=false; fi
+          echo "docker=$DOCKER_OK" >> "$GITHUB_OUTPUT"
+          echo "jdbc=$JDBC_OK" >> "$GITHUB_OUTPUT"
+          echo "vsign=$VSIGN_OK" >> "$GITHUB_OUTPUT"
+
   release-ready:
     name: Verify draft release
     runs-on: ubuntu-latest
@@ -61,9 +87,10 @@ jobs:
         run: nix build .#dbx-desktop --no-link --print-build-logs
 
   bump-jdbc-plugin-version:
+    needs: secrets-gate
     # The bump is committed back to main with a dedicated token; without it the
     # job cannot push and the downstream JDBC plugin packaging is skipped.
-    if: secrets.MCP_RELEASE_TOKEN != ''
+    if: needs.secrets-gate.outputs.jdbc == 'true'
     runs-on: ubuntu-latest
     outputs:
       changed: ${{ steps.bump.outputs.changed }}
@@ -157,6 +184,10 @@ jobs:
     env:
       CARGO_INCREMENTAL: "0"
       RUSTC_WRAPPER: sccache
+      # Secret presence flags for step-level `if:` (the secrets context is not
+      # available there directly).
+      HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' && 'true' || '' }}
+      HAS_TAURI_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_BASE64 != '' && 'true' || '' }}
       # The GTK plugin wrapper removes these after its own deployment pass,
       # while linuxdeploy must also exclude them from its later dependency pass.
       LINUXDEPLOY_EXCLUDED_LIBRARIES: "libwayland-*.so*;libxkbcommon.so*;libxcb-randr.so*;libxcb-render.so*;libxcb-shm.so*;libXau.so*;libXdmcp.so*"
@@ -254,7 +285,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install Apple certificate (macOS)
-        if: startsWith(matrix.platform, 'macos') && secrets.APPLE_CERTIFICATE != ''
+        if: startsWith(matrix.platform, 'macos') && env.HAS_APPLE_CERT == 'true'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -299,7 +330,7 @@ jobs:
           ./.github/scripts/prepare-appimage-bundler.sh "${{ matrix.target }}"
 
       - name: Setup Tauri signing key
-        if: secrets.TAURI_SIGNING_PRIVATE_KEY_BASE64 != ''
+        if: env.HAS_TAURI_SIGNING_KEY == 'true'
         shell: bash
         run: |
           echo "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_BASE64 }}" | base64 --decode > "$RUNNER_TEMP/updater.key"
@@ -362,6 +393,10 @@ jobs:
       # Environment flags override target rustflags; retain the 8 MiB stack.
       RUSTFLAGS: -C link-arg=/STACK:8388608
       RUSTC_WRAPPER: sccache
+      # Secret presence flags for step-level `if:` (the secrets context is not
+      # available there directly).
+      HAS_VSIGN: ${{ secrets.VSIGN_OPERATOR_PFX_B64 != '' && 'true' || '' }}
+      HAS_TAURI_SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_BASE64 != '' && 'true' || '' }}
       SCCACHE_GHA_ENABLED: ${{ secrets.SCCACHE_S3_BUCKET == '' && 'true' || 'false' }}
       VSIGN_CERT_HASH: ${{ vars.VSIGN_CERT_HASH }}
       VSIGN_OPERATOR_SHA1: ${{ vars.VSIGN_OPERATOR_SHA1 }}
@@ -459,7 +494,7 @@ jobs:
           cache-on-failure: true
 
       - name: Setup Tauri signing key
-        if: secrets.TAURI_SIGNING_PRIVATE_KEY_BASE64 != ''
+        if: env.HAS_TAURI_SIGNING_KEY == 'true'
         shell: bash
         run: |
           echo "${{ secrets.TAURI_SIGNING_PRIVATE_KEY_BASE64 }}" | base64 --decode > "$RUNNER_TEMP/updater.key"
@@ -470,7 +505,7 @@ jobs:
           fi
 
       - name: Setup TrustAsia VSign
-        if: secrets.VSIGN_OPERATOR_PFX_B64 != ''
+        if: env.HAS_VSIGN == 'true'
         shell: pwsh
         env:
           VSIGN_OPERATOR_PFX_B64: ${{ secrets.VSIGN_OPERATOR_PFX_B64 }}
@@ -532,7 +567,7 @@ jobs:
           }
 
       - name: Upload Windows WebView2 offline installer
-        if: secrets.VSIGN_OPERATOR_PFX_B64 != ''
+        if: env.HAS_VSIGN == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -568,7 +603,7 @@ jobs:
           gh release upload "${env:RELEASE_TAG}" $offlineName --repo "${env:GITHUB_REPOSITORY}" --clobber
 
       - name: Upload Windows portable ZIP
-        if: secrets.VSIGN_OPERATOR_PFX_B64 != ''
+        if: env.HAS_VSIGN == 'true'
         timeout-minutes: 20
         shell: pwsh
         env:
@@ -648,15 +683,16 @@ jobs:
           }
 
   build-windows-7-offline:
-    needs: release-ready
+    needs: [release-ready, secrets-gate]
     # The fixed-runtime installer is only produced through the VSign remote
     # signing pipeline; without the operator secret the whole job is moot.
-    if: secrets.VSIGN_OPERATOR_PFX_B64 != ''
+    if: needs.secrets-gate.outputs.vsign == 'true'
     runs-on: windows-2022
     environment: release-signing
     # The vendored loader is a tracked Cargo input, so Rust compile caching is safe.
     env:
       CARGO_INCREMENTAL: "0"
+      HAS_VSIGN: ${{ secrets.VSIGN_OPERATOR_PFX_B64 != '' && 'true' || '' }}
       # An env RUSTFLAGS replaces .cargo/config.toml target rustflags, so the
       # 8 MiB main-thread stack must be repeated here: without it the legacy PE
       # keeps the 1 MiB linker default and deep connect/serde call stacks abort
@@ -731,7 +767,7 @@ jobs:
         run: ./.github/scripts/assert-webview2-win7-loader.ps1 -BinaryPath target/x86_64-win7-windows-msvc/release/dbx.exe
 
       - name: Setup TrustAsia VSign
-        if: secrets.VSIGN_OPERATOR_PFX_B64 != ''
+        if: env.HAS_VSIGN == 'true'
         shell: pwsh
         env:
           VSIGN_OPERATOR_PFX_B64: ${{ secrets.VSIGN_OPERATOR_PFX_B64 }}
@@ -1351,9 +1387,10 @@ jobs:
             --apply
 
   docker:
+    needs: secrets-gate
     # Publishing container images requires both registry credentials; a fork
     # without them skips the matrix instead of failing every push.
-    if: secrets.DOCKERHUB_USERNAME != '' && secrets.CNB_TOKEN != ''
+    if: needs.secrets-gate.outputs.docker == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
