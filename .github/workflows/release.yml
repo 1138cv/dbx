@@ -677,6 +677,50 @@ jobs:
 
           gh release upload "${env:RELEASE_TAG}" $zipName $signatureName --repo "${env:GITHUB_REPOSITORY}" --clobber
 
+      # Fork builds without VSign credentials still ship a portable ZIP; skipping
+      # Authenticode and updater signatures is fine for personal use.
+      - name: Upload Windows portable ZIP (unsigned)
+        if: env.HAS_VSIGN != 'true'
+        timeout-minutes: 20
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tagVersion = "${env:RELEASE_TAG}".TrimStart("v")
+          $version = $tagVersion -replace '-beta\..*$', ''
+          $arch = "${{ matrix.arch }}"
+          $portableDir = "portable/DBX_${version}_${arch}"
+          $zipName = "DBX_${version}_${arch}-portable.zip"
+          $exePath = "target/${{ matrix.target }}/release/dbx.exe"
+          $cargoMetadata = cargo metadata --no-deps --format-version 1 | ConvertFrom-Json
+          $appVersion = ($cargoMetadata.packages | Where-Object { $_.name -eq "dbx" } | Select-Object -First 1).version
+
+          if (!(Test-Path $exePath)) {
+            throw "Missing Windows executable: $exePath"
+          }
+          if (!$appVersion -or ($appVersion -ne $version -and $appVersion -ne $tagVersion)) {
+            throw "Release tag version $tagVersion or base version $version does not match the built DBX package version $appVersion"
+          }
+
+          New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
+          Copy-Item $exePath (Join-Path $portableDir "DBX.exe") -Force
+          Copy-Item "LICENSE" (Join-Path $portableDir "LICENSE") -Force
+          Copy-Item "README.md" (Join-Path $portableDir "README.md") -Force
+          Set-Content -Path (Join-Path $portableDir "portable.dbx") -Value "" -NoNewline
+
+          $portableExe = Join-Path $portableDir "DBX.exe"
+          $manifest = [ordered]@{
+            schema_version = 1
+            version = $appVersion
+            arch = $arch
+            executable = "DBX.exe"
+            executable_sha256 = (Get-FileHash -LiteralPath $portableExe -Algorithm SHA256).Hash.ToLowerInvariant()
+          } | ConvertTo-Json
+          Set-Content -Path (Join-Path $portableDir "portable-update.json") -Value $manifest -Encoding utf8NoBOM
+
+          Compress-Archive -Path (Join-Path $portableDir "*") -DestinationPath $zipName -Force
+          gh release upload "${env:RELEASE_TAG}" $zipName --repo "${env:GITHUB_REPOSITORY}" --clobber
+
       - name: Show sccache stats
         if: always()
         continue-on-error: true
