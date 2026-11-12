@@ -351,7 +351,9 @@ jobs:
           # holds far less memory than the default bfd linker.
           CARGO_BUILD_JOBS: ${{ (matrix.platform == 'ubuntu-22.04-arm' && '1') || 'default' }}
           RUSTFLAGS: ${{ (matrix.platform == 'ubuntu-22.04-arm' && '-C link-arg=-fuse-ld=lld') || '' }}
-          APPLE_SIGNING_IDENTITY: ${{ startsWith(matrix.platform, 'macos') && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          # An empty identity makes codesign fail with "no identity found";
+          # without the certificate secret fall back to ad-hoc signing ("-").
+          APPLE_SIGNING_IDENTITY: ${{ startsWith(matrix.platform, 'macos') && secrets.APPLE_SIGNING_IDENTITY || '-' }}
           APPLE_ID: ${{ startsWith(matrix.platform, 'macos') && secrets.APPLE_ID || '' }}
           APPLE_PASSWORD: ${{ startsWith(matrix.platform, 'macos') && secrets.APPLE_PASSWORD || '' }}
           APPLE_TEAM_ID: ${{ startsWith(matrix.platform, 'macos') && secrets.APPLE_TEAM_ID || '' }}
