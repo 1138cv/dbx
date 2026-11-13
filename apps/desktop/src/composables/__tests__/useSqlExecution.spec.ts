@@ -1476,6 +1476,32 @@ SELECT @value AS Message;`;
     expect(executeCurrentSql).toHaveBeenCalledWith(resolvedSql, { tabId: "tab-1", openInNewResultTab: true });
   });
 
+  it("skips the SQL parameter dialog when a preprocessor plugin owns the placeholders", async () => {
+    const sql = '{"id": 7}\n===\nSELECT * FROM users WHERE id = :id';
+    const activeTab = ref<QueryTab | undefined>({ ...queryTab("app"), sql });
+    const activeConnection = ref<ConnectionConfig | undefined>(connection("mysql"));
+    const activeOutputView = ref<"result" | "summary" | "explain" | "chart">("result");
+    const queryStore = useQueryStore();
+    const executeCurrentSql = vi.spyOn(queryStore, "executeCurrentSql").mockImplementation(async () => {
+      if (activeTab.value) activeTab.value.result = { columns: ["id"], rows: [[7]], affected_rows: 0, execution_time_ms: 1 };
+    });
+    vi.spyOn(queryStore, "probeSqlPreprocessors").mockResolvedValue("SELECT * FROM users WHERE id = 7");
+    vi.spyOn(useHistoryStore(), "add").mockResolvedValue(undefined);
+
+    const execution = useSqlExecution({
+      activeTab: computed(() => activeTab.value),
+      activeConnection: computed(() => activeConnection.value),
+      executableSql: computed(() => sql),
+      activeOutputView,
+    });
+
+    await execution.tryExecute();
+
+    expect(execution.showSqlParameterDialog.value).toBe(false);
+    // The raw editor text flows on; the authoritative rewrite happens in executeTabSql.
+    expect(executeCurrentSql).toHaveBeenCalledWith(sql, { tabId: "tab-1" });
+  });
+
   it("settles a failed execution after accepting a SQL parameter dialog", async () => {
     const sql = "SELECT * FROM users WHERE id = :id";
     const activeTab = ref<QueryTab | undefined>({ ...queryTab("app"), sql });

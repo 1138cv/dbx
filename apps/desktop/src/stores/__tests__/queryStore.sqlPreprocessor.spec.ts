@@ -202,4 +202,21 @@ describe("queryStore plugin SQL preprocessors", () => {
     expect(tab.executionId).toBeUndefined();
     expect(tab.lastExecutedSql).toBeUndefined();
   });
+
+  it("probes preprocessors read-only without recording tab execution state", async () => {
+    mocks.listPlugins.mockResolvedValue([preprocessorPlugin()]);
+    mocks.invokePlugin.mockResolvedValue({ action: "rewrite", sql: REWRITTEN_SQL });
+    const { useQueryStore } = await import("@/stores/queryStore");
+    const store = useQueryStore();
+    const tabId = store.createTab("mysql-1", "app", "Query");
+
+    await expect(store.probeSqlPreprocessors(tabId, EDITOR_SQL)).resolves.toBe(REWRITTEN_SQL);
+    await expect(store.probeSqlPreprocessors(tabId, "SELECT 1")).resolves.toBe("SELECT 1");
+
+    const tab = store.tabs.find((item) => item.id === tabId)!;
+    expect(mocks.executeMulti).not.toHaveBeenCalled();
+    expect(tab.lastExecutedSql).toBeUndefined();
+    expect(tab.lastPreprocessedSql).toBeUndefined();
+    expect(tab.isExecuting).toBe(false);
+  });
 });

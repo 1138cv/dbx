@@ -7131,7 +7131,7 @@ export const useQueryStore = defineStore("query", () => {
     let preprocessed = sql;
     for (const preprocessor of preprocessors) {
       try {
-        preprocessed = await preprocessSql((pluginId, method, params, timeoutMs) => api.invokePlugin(pluginId, method, params, timeoutMs), preprocessor, context);
+        preprocessed = await preprocessSql((pluginId, method, params, timeoutMs) => api.invokePlugin(pluginId, method, params, timeoutMs), preprocessor, preprocessed, context);
       } catch (error) {
         throw new Error(`SQL preprocessor '${preprocessor.label}' failed: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -12239,6 +12239,15 @@ export const useQueryStore = defineStore("query", () => {
     captureResultLegacyValuesForExport,
     executeCurrentTab,
     executeCurrentSql,
+    // Read-only probe used by the parameter-dialog gate: it lets the composable
+    // detect text a preprocessor will strip placeholders from, without mutating
+    // tab state or the execution path (the authoritative rewrite still happens
+    // in executeTabSql).
+    probeSqlPreprocessors: (tabId: string, sql: string) => {
+      const tab = tabs.value.find((item) => item.id === tabId);
+      if (!tab) return Promise.resolve(sql);
+      return preprocessTabEditorSql(tab, sql, "editor");
+    },
     executeTabSql,
     dismissBatchSqlRecovery,
     resumeBatchSql,

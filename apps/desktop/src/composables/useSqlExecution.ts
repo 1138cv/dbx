@@ -361,7 +361,7 @@ export function useSqlExecution(deps: {
       const state = queryStore.oracleTriggerSourceState(tab.id);
       return ok || (state?.result !== previousResult && state?.result?.steps.some((step) => step.receipt !== undefined)) ? { status: "started", ok, tabId: tab.id, errorMessage: state?.error } : notStarted("blocked", tab.id);
     }
-    if (supportsSqlTemplateParameters(context.connection, sql) && prepareSqlParameterDialog(sql, sourceOffset, executionOptions)) {
+    if (supportsSqlTemplateParameters(context.connection, sql) && (await shouldShowSqlParameterDialog(sql, sourceOffset, executionOptions))) {
       return deferred("parameters", context.tabId);
     }
     return continueExecute(context, sql, sourceOffset, executionOptions);
@@ -452,6 +452,39 @@ export function useSqlExecution(deps: {
     return doExecute(sql, sourceOffset, options);
   }
 
+  /**
+   * Whether a sql-preprocessor-v1 plugin will rewrite this text, i.e. whether
+   * the placeholders a preprocessor owns should skip the built-in parameter
+   * dialog. The probe reuses the store's preprocessing chain read-only; the
+   * authoritative rewrite still happens in executeTabSql. Discovery failures
+   * are already swallowed inside the store, so no plugins → `false` → the
+   * dialog keeps its behavior. A genuine plugin failure also skips the dialog:
+   * substituting values there would corrupt plugin-owned text, and the
+   * authoritative rewrite in executeTabSql fails closed anyway.
+   */
+  function sqlPreprocessorsOwnPlaceholders(tabId: string, sql: string): Promise<boolean> {
+    return queryStore.probeSqlPreprocessors(tabId, sql).then(
+      (probed) => probed !== sql,
+      () => true,
+    );
+  }
+
+  /**
+   * Gate for the built-in parameter dialog: it opens only when the text has
+   * parameters the user must fill AND no preprocessor plugin will rewrite them
+   * away. `prepareSqlParameterDialog` already extracts the descriptors; the
+   * plugin probe is an RPC so it runs only when a dialog could actually open.
+   */
+  async function shouldShowSqlParameterDialog(sql: string, sourceOffset: number | undefined, options: SqlExecutionOptions, continuation?: (sql: string, sourceOffset?: number) => Promise<void> | void): Promise<boolean> {
+    if (!prepareSqlParameterDialog(sql, sourceOffset, options, continuation)) return false;
+    if (await sqlPreprocessorsOwnPlaceholders(options.tabId ?? "", sql)) {
+      showSqlParameterDialog.value = false;
+      pendingSqlParameterContinuation = undefined;
+      return false;
+    }
+    return true;
+  }
+
   function prepareSqlParameterDialog(sql: string, sourceOffset?: number, options: SqlExecutionOptions = {}, continuation?: (sql: string, sourceOffset?: number) => Promise<void> | void): boolean {
     const connection = resolveExecutionConnection(options.tabId);
     const databaseType = effectiveDatabaseTypeForConnection(connection) ?? connection?.db_type;
@@ -484,7 +517,7 @@ export function useSqlExecution(deps: {
     }
     const { sql, sourceOffset } = await resolvedExecutableSql(undefined, context);
     if (!sql.trim()) return false;
-    if (supportsSqlTemplateParameters(context.connection, sql) && prepareSqlParameterDialog(sql, sourceOffset, { tabId: context.tabId }, onReady)) {
+    if (supportsSqlTemplateParameters(context.connection, sql) && (await shouldShowSqlParameterDialog(sql, sourceOffset, { tabId: context.tabId }, onReady))) {
       return true;
     }
     await onReady(sql, sourceOffset);
@@ -1067,7 +1100,7 @@ export function useSqlExecution(deps: {
     }
     // Resolve SQL template variables exactly like tryExecute so EXPLAIN never runs the raw
     // placeholders (e.g. `EXPLAIN (FORMAT JSON) SELECT :var;` fails on PostgreSQL).
-    if (supportsSqlTemplateParameters(context.connection, sql) && prepareSqlParameterDialog(sql, sourceOffset, { tabId: context.tabId }, (resolvedSql) => runExplain(resolvedSql, context))) {
+    if (supportsSqlTemplateParameters(context.connection, sql) && (await shouldShowSqlParameterDialog(sql, sourceOffset, { tabId: context.tabId }, (resolvedSql) => runExplain(resolvedSql, context)))) {
       return;
     }
     await runExplain(sql, context);
