@@ -128,6 +128,12 @@ function withConnectionHealthMock(handler: typeof fetch): typeof fetch {
     if (String(input) === "/api/connection/check-health") {
       return new Response("null", { status: 200, headers: { "Content-Type": "application/json" } });
     }
+    // SQL-preprocessor discovery polls the installed-plugin registry before
+    // every execution; these tests install no plugins, so answer empty instead
+    // of leaking the request into each test's request journal.
+    if (String(input) === "/api/plugins") {
+      return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+    }
     if (String(input) === "/api/mongo/parse-shell-command") {
       const source = JSON.parse(String(init?.body ?? "{}")).source as string;
       const parsed = parseMongoCommand(source)?.command;

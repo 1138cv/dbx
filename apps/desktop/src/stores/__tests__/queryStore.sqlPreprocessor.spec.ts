@@ -205,7 +205,7 @@ describe("queryStore plugin SQL preprocessors", () => {
 
   it("probes preprocessors read-only without recording tab execution state", async () => {
     mocks.listPlugins.mockResolvedValue([preprocessorPlugin()]);
-    mocks.invokePlugin.mockResolvedValue({ action: "rewrite", sql: REWRITTEN_SQL });
+    mocks.invokePlugin.mockImplementation(async (_pluginId: string, _method: string, params: { sql: string }) => (params.sql.includes("===\n") ? { action: "rewrite", sql: REWRITTEN_SQL } : { action: "passthrough" }));
     const { useQueryStore } = await import("@/stores/queryStore");
     const store = useQueryStore();
     const tabId = store.createTab("mysql-1", "app", "Query");
