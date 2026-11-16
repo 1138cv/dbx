@@ -77,6 +77,9 @@ jobs:
           exit 1
 
   nix-packaging:
+    # Fork build needs only the Windows portable ZIP and the macOS arm64 dmg;
+    # re-enable by removing this gate.
+    if: false
     runs-on: ubuntu-22.04
     continue-on-error: true
     steps:
@@ -169,23 +172,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # assetNamePattern renames every bundle artifact of a matrix leg, so
-          # it is set only on aarch64 legs (aarch64 -> arm64). x64 legs leave
-          # it empty and keep the default Tauri CLI names (x64.dmg, amd64
-          # deb/rpm/AppImage) used by downloadLinks and package consumers.
-          # GitHub-hosted macOS ARM64 runners are repeatedly reclaimed ~15 min
-          # into the build (job cancelled, no failing step, logs lost) across
-          # both macos-latest and macos-15, while Intel runners are stable.
-          # Cross-compile the arm64 bundle on the Intel image instead.
+          # Fork build matrix trimmed to the macOS arm64 dmg only (cross-compiled
+          # on an Intel runner: GitHub-hosted ARM64 macOS runners are repeatedly
+          # reclaimed ~15 min into the build). Restore the intel/ubuntu legs
+          # here when more artifacts are needed.
           - platform: macos-15-intel
             target: aarch64-apple-darwin
-            asset_pattern: "DBX_[version]_arm64[setup][ext]"
-          - platform: macos-15-intel
-            target: x86_64-apple-darwin
-          - platform: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-          - platform: ubuntu-22.04-arm
-            target: aarch64-unknown-linux-gnu
             asset_pattern: "DBX_[version]_arm64[setup][ext]"
 
     runs-on: ${{ matrix.platform }}
@@ -367,7 +359,7 @@ jobs:
           releaseDraft: true
           # Empty on x64 legs: tauri-action then keeps the default Tauri CLI names.
           assetNamePattern: ${{ matrix.asset_pattern }}
-          args: --target ${{ matrix.target }} ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_BASE64 == '' && '--config src-tauri/tauri.fork-no-updater.conf.json' || '' }}
+          args: --target ${{ matrix.target }} --bundles dmg ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_BASE64 == '' && '--config src-tauri/tauri.fork-no-updater.conf.json' || '' }}
 
       - name: Verify AppImage runtime bundle
         if: startsWith(matrix.platform, 'ubuntu')
@@ -387,10 +379,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Fork build trimmed to the x64 portable ZIP; restore the arm64 leg
+          # when needed.
           - target: x86_64-pc-windows-msvc
             arch: x64
-          - target: aarch64-pc-windows-msvc
-            arch: arm64
     runs-on: windows-2022
     env:
       CARGO_INCREMENTAL: "0"
@@ -540,13 +532,17 @@ jobs:
           # unsigned instead of failing the bundle step. Likewise, without an
           # updater signing key the updater artifacts are disabled via the
           # supplementary config instead of failing the bundle step.
-          args: --target ${{ matrix.target }} ${{ secrets.VSIGN_OPERATOR_PFX_B64 != '' && '--config src-tauri/tauri.vsign.conf.json' || '' }} --config src-tauri/tauri.msi-version.conf.json ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_BASE64 == '' && '--config src-tauri/tauri.fork-no-updater.conf.json' || '' }}
+          # --no-bundle: the fork ships only the portable ZIP built from the raw
+          # executable below, so skip installer bundling entirely. Restore the
+          # original args (nsis/msi configs) when installers are needed again.
+          args: --target ${{ matrix.target }} --no-bundle ${{ secrets.VSIGN_OPERATOR_PFX_B64 != '' && '--config src-tauri/tauri.vsign.conf.json' || '' }} ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_BASE64 == '' && '--config src-tauri/tauri.fork-no-updater.conf.json' || '' }}
 
       - name: Verify Windows executable stack reserve
         shell: pwsh
         run: ./.github/scripts/assert-windows-stack-reserve.ps1 -BinaryPath "target/${{ matrix.target }}/release/dbx.exe"
 
       - name: Verify Windows bundles
+        if: false
         shell: pwsh
         env:
           VSIGN_SIGNED: ${{ secrets.VSIGN_OPERATOR_PFX_B64 != '' && 'true' || '' }}
@@ -880,6 +876,9 @@ jobs:
           }
 
   build-windows-7-static-browser:
+    # Fork build needs only the Windows portable ZIP and the macOS arm64 dmg;
+    # re-enable by removing this gate.
+    if: false
     needs: release-ready
     runs-on: windows-2022
     strategy:
@@ -977,6 +976,9 @@ jobs:
     # Fully static musl builds of the browser (dbx-web) variant. No glibc
     # dependency, so the tarball runs on any Linux distribution (verified in
     # the oldest pullable Ubuntu container for each arch).
+    # Fork build needs only the Windows portable ZIP and the macOS arm64 dmg;
+    # re-enable by removing this gate.
+    if: false
     needs: release-ready
     strategy:
       fail-fast: false
