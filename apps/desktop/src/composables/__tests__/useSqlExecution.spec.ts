@@ -1,4 +1,4 @@
-import { computed, nextTick, ref } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { isDangerousSql, requiresConnectionSelection, requiresDatabaseSelection, snapshotResultForMerge, supportsSqlTemplateParameters, useSqlExecution } from "../useSqlExecution";
@@ -1499,6 +1499,40 @@ SELECT @value AS Message;`;
 
     expect(execution.showSqlParameterDialog.value).toBe(false);
     // The raw editor text flows on; the authoritative rewrite happens in executeTabSql.
+    expect(executeCurrentSql).toHaveBeenCalledWith(sql, { tabId: "tab-1" });
+  });
+
+  it("never mounts the parameter dialog for preprocessor-owned placeholders", async () => {
+    const sql = '{"id": 7}\n===\nSELECT * FROM users WHERE id = :id';
+    const activeTab = ref<QueryTab | undefined>({ ...queryTab("app"), sql });
+    const activeConnection = ref<ConnectionConfig | undefined>(connection("mysql"));
+    const activeOutputView = ref<"result" | "summary" | "explain" | "chart">("result");
+    const queryStore = useQueryStore();
+    const executeCurrentSql = vi.spyOn(queryStore, "executeCurrentSql").mockImplementation(async () => {
+      if (activeTab.value) activeTab.value.result = { columns: ["id"], rows: [[7]], affected_rows: 0, execution_time_ms: 1 };
+    });
+    vi.spyOn(queryStore, "probeSqlPreprocessors").mockImplementation(async () => {
+      // The probe resolves after a tick; the dialog must not open while awaiting it.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      return "SELECT * FROM users WHERE id = 7";
+    });
+    vi.spyOn(useHistoryStore(), "add").mockResolvedValue(undefined);
+
+    const execution = useSqlExecution({
+      activeTab: computed(() => activeTab.value),
+      activeConnection: computed(() => activeConnection.value),
+      executableSql: computed(() => sql),
+      activeOutputView,
+    });
+    let opened = false;
+    const unwatch = watch(execution.showSqlParameterDialog, (open) => {
+      if (open) opened = true;
+    });
+
+    await execution.tryExecute();
+    unwatch();
+
+    expect(opened).toBe(false);
     expect(executeCurrentSql).toHaveBeenCalledWith(sql, { tabId: "tab-1" });
   });
 

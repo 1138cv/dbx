@@ -472,20 +472,20 @@ export function useSqlExecution(deps: {
   /**
    * Gate for the built-in parameter dialog: it opens only when the text has
    * parameters the user must fill AND no preprocessor plugin will rewrite them
-   * away. `prepareSqlParameterDialog` already extracts the descriptors; the
-   * plugin probe is an RPC so it runs only when a dialog could actually open.
+   * away. The descriptor extraction runs first (pure computation, no UI state),
+   * then the plugin probe, and only then is the dialog actually opened — so a
+   * preprocessor-owned text never flashes a dialog that is immediately closed.
    */
   async function shouldShowSqlParameterDialog(sql: string, sourceOffset: number | undefined, options: SqlExecutionOptions, continuation?: (sql: string, sourceOffset?: number) => Promise<void> | void): Promise<boolean> {
-    if (!prepareSqlParameterDialog(sql, sourceOffset, options, continuation)) return false;
-    if (await sqlPreprocessorsOwnPlaceholders(options.tabId ?? "", sql)) {
-      showSqlParameterDialog.value = false;
-      pendingSqlParameterContinuation = undefined;
-      return false;
-    }
+    const prepared = extractSqlParameterDialogState(sql, sourceOffset, options, continuation);
+    if (!prepared) return false;
+    if (await sqlPreprocessorsOwnPlaceholders(options.tabId ?? "", sql)) return false;
+    applySqlParameterDialogState(prepared);
+    showSqlParameterDialog.value = true;
     return true;
   }
 
-  function prepareSqlParameterDialog(sql: string, sourceOffset?: number, options: SqlExecutionOptions = {}, continuation?: (sql: string, sourceOffset?: number) => Promise<void> | void): boolean {
+  function extractSqlParameterDialogState(sql: string, sourceOffset: number | undefined, options: SqlExecutionOptions, continuation?: (sql: string, sourceOffset?: number) => Promise<void> | void) {
     const connection = resolveExecutionConnection(options.tabId);
     const databaseType = effectiveDatabaseTypeForConnection(connection) ?? connection?.db_type;
     const tab = resolveExecutionTab(options.tabId);
@@ -495,19 +495,21 @@ export function useSqlExecution(deps: {
     const parameterDatabaseType = kingbaseSqlDatabaseType(connection) ?? databaseType;
     const parameters = extractSqlParameterDescriptors(sql, { databaseType: parameterDatabaseType, compatibilityMode, enabledSyntaxes });
     if (!parameters.length) {
-      return false;
+      return undefined;
     }
-    sqlParameterSourceSql.value = sql;
-    sqlParameterNames.value = parameters;
-    sqlParameterDatabaseType.value = parameterDatabaseType;
-    sqlParameterEnabledSyntaxes.value = enabledSyntaxes;
-    pendingSourceOffset.value = sourceOffset;
-    pendingOpenInNewResultTab.value = options.openInNewResultTab === true;
-    pendingSqlParameterEditorViewportRequestId.value = options.editorViewportRequestId;
-    pendingSqlParameterTabId.value = options.tabId;
-    pendingSqlParameterContinuation = continuation;
-    showSqlParameterDialog.value = true;
-    return true;
+    return { sql, parameters, parameterDatabaseType, enabledSyntaxes, sourceOffset, openInNewResultTab: options.openInNewResultTab === true, editorViewportRequestId: options.editorViewportRequestId, tabId: options.tabId, continuation };
+  }
+
+  function applySqlParameterDialogState(prepared: NonNullable<ReturnType<typeof extractSqlParameterDialogState>>) {
+    sqlParameterSourceSql.value = prepared.sql;
+    sqlParameterNames.value = prepared.parameters;
+    sqlParameterDatabaseType.value = prepared.parameterDatabaseType;
+    sqlParameterEnabledSyntaxes.value = prepared.enabledSyntaxes;
+    pendingSourceOffset.value = prepared.sourceOffset;
+    pendingOpenInNewResultTab.value = prepared.openInNewResultTab;
+    pendingSqlParameterEditorViewportRequestId.value = prepared.editorViewportRequestId;
+    pendingSqlParameterTabId.value = prepared.tabId;
+    pendingSqlParameterContinuation = prepared.continuation;
   }
 
   async function prepareMultiExecute(onReady: (sql: string, sourceOffset?: number) => Promise<void> | void): Promise<boolean> {
