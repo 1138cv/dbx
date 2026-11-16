@@ -515,27 +515,13 @@ jobs:
         shell: pwsh
         run: node .github/scripts/prepare-msi-config.mjs "${env:RELEASE_TAG}" src-tauri/tauri.msi-version.conf.json
 
-      - name: Build and sign Tauri app
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SSIGNCODE_OPERATOR_PWD: ${{ secrets.VSIGN_OPERATOR_PWD }}
-          VSIGN_KEY_PIN: ${{ secrets.VSIGN_KEY_PIN }}
-        with:
-          tagName: ${{ inputs.release_tag || github.ref_name }}
-          releaseDraft: true
-          # No assetNamePattern: the default Tauri CLI names already produce
-          # DBX_[version]_x64/arm64-setup.exe and keep the _en-US.msi names.
-          # tauri.msi-version.conf.json is generated above and is empty for stable tags.
-          # The VSign config wires a remote Windows signing command; without the
-          # operator secret it must stay out of the build so installers come out
-          # unsigned instead of failing the bundle step. Likewise, without an
-          # updater signing key the updater artifacts are disabled via the
-          # supplementary config instead of failing the bundle step.
-          # --no-bundle: the fork ships only the portable ZIP built from the raw
-          # executable below, so skip installer bundling entirely. Restore the
-          # original args (nsis/msi configs) when installers are needed again.
-          args: --target ${{ matrix.target }} --no-bundle ${{ secrets.VSIGN_OPERATOR_PFX_B64 != '' && '--config src-tauri/tauri.vsign.conf.json' || '' }} ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_BASE64 == '' && '--config src-tauri/tauri.fork-no-updater.conf.json' || '' }}
+      - name: Build Tauri app (portable executable only)
+        # tauri-action fails with "No artifacts were found" when --no-bundle
+        # leaves it nothing to upload, and this leg uploads nothing itself: the
+        # portable ZIP step below packages the raw executable. Restore the
+        # tauri-action step with nsis/msi configs when installers are needed.
+        shell: pwsh
+        run: pnpm tauri build --target ${{ matrix.target }} --no-bundle
 
       - name: Verify Windows executable stack reserve
         shell: pwsh
